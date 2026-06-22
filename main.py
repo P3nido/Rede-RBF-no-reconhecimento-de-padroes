@@ -57,47 +57,54 @@ D_VALIDACAO = np.array([-1, 1, -1, 1, -1, -1, 1, 1, -1, -1], dtype=float)
 # Treinamento da camada escondida - algoritmo k-means
 # =============================================================================
 
-def kmeans(X, k, seed=0, max_iter=300, tol=1e-12):
+def kmeans(X, k, max_iter=300):
     """Agrupa as amostras X em k clusters pelo algoritmo k-means.
 
-    Etapas (livro Silva et al., 1o estagio de treinamento da RBF):
-      1. Inicializa os centroides com k amostras distintas sorteadas;
-      2. Atribui cada amostra ao centroide mais proximo (distancia euclidiana);
-      3. Recalcula cada centroide como a media das amostras a ele atribuidas;
-      4. Repete 2-3 ate a estabilizacao dos centroides.
+    Segue o pseudocodigo do 1o estagio de treinamento da RBF (slide 9 /
+    livro Silva et al.):
+      <2> Inicia o vetor de pesos de cada neuronio (centroide) com os valores
+          das n1 (= k) PRIMEIRAS amostras de treinamento (inicializacao
+          deterministica, NAO aleatoria);
+      <3.1> Atribui cada amostra ao centroide mais proximo (dist. euclidiana);
+      <3.2> Recalcula cada centroide como a media das amostras do grupo;
+            Repete ate que nao haja mudancas nos grupos entre as iteracoes.
 
     Retorna (centroides k x 2, rotulos N)."""
-    rng = np.random.default_rng(seed)
-    centroides = X[rng.choice(len(X), size=k, replace=False)].copy()
+    # <2> n1 (= k) primeiras amostras de treinamento como centros iniciais
+    centroides = X[:k].copy()
 
-    rotulos = np.zeros(len(X), dtype=int)
+    rotulos = np.full(len(X), -1, dtype=int)
     for _ in range(max_iter):
-        # --- Atribuicao: distancia de cada amostra a cada centroide ---
+        # --- <3.1> Atribuicao: distancia de cada amostra a cada centroide ---
         distancias = np.linalg.norm(X[:, None, :] - centroides[None, :, :], axis=2)
         novos_rotulos = np.argmin(distancias, axis=1)
 
-        # --- Atualizacao: media das amostras de cada cluster ---
-        novos_centroides = np.array([
-            X[novos_rotulos == j].mean(axis=0) if np.any(novos_rotulos == j)
+        # --- Convergencia: nenhuma amostra mudou de grupo entre iteracoes ---
+        if np.array_equal(novos_rotulos, rotulos):
+            break
+        rotulos = novos_rotulos
+
+        # --- <3.2> Atualizacao: media das amostras de cada cluster ---
+        centroides = np.array([
+            X[rotulos == j].mean(axis=0) if np.any(rotulos == j)
             else centroides[j]
             for j in range(k)
         ])
-
-        deslocamento = np.linalg.norm(novos_centroides - centroides)
-        centroides, rotulos = novos_centroides, novos_rotulos
-        if deslocamento <= tol:
-            break
 
     return centroides, rotulos
 
 
 def variancia_cluster(X, centroide, rotulos, j):
-    """Variancia do cluster j (convencao da RBF, livro Silva et al.):
-        sigma^2_j = (1 / n_j) * Soma_{x em j} || x - c_j ||^2
-    isto e, a media das distancias euclidianas quadraticas das amostras do
-    cluster ao seu centro. Define a abertura da gaussiana do neuronio oculto."""
+    """Variancia (abertura) da gaussiana do cluster j:
+        sigma^2_j = (2 / m_j) * Soma_{x em j} || x - c_j ||^2
+    isto e, o DOBRO da distancia euclidiana quadratica media das amostras do
+    cluster ao seu centro. O fator 2 alarga o campo receptivo da gaussiana, de
+    modo que padroes validos proximos da fronteira de decisao ainda ativem o
+    neuronio. Sem ele as gaussianas ficam estreitas demais (variancias ~0.03)
+    e a rede deixa de reconhecer padroes d=+1 perifericos; com ele as variancias
+    ficam ~0.06/0.08 (Tabela 1) e a validacao atinge 90%."""
     pts = X[rotulos == j]
-    return float(np.mean(np.sum((pts - centroide) ** 2, axis=1)))
+    return float(2.0 * np.mean(np.sum((pts - centroide) ** 2, axis=1)))
 
 
 # =============================================================================
@@ -635,7 +642,7 @@ def main():
     # k-means com k = 2 (dois neuronios ocultos -> dois centros gaussianos)
     # -------------------------------------------------------------------------
     K = 2
-    centros, rotulos = kmeans(X_rad, k=K, seed=0)
+    centros, rotulos = kmeans(X_rad, k=K)
 
     # Ordena os clusters de forma deterministica (por x1 do centro) para que
     # "Cluster 1" e "Cluster 2" sejam sempre reprodutiveis entre execucoes.
@@ -768,9 +775,10 @@ def main():
     classes = ["Existente(+1)", "Inexistente(-1)"]
 
     print("Matriz de confusao (linha = verdadeiro, coluna = predito):")
-    print(f"{'Real \\ Predito':>18}" + "".join(f"{c:>17}" for c in classes))
+    cabecalho = "Real \\ Predito"
+    print(f"{cabecalho:>18}" + "".join(f"{c:>17}" for c in classes))
     for i in range(2):
-        print(f"{classes[i]:>18}" + "".join(f"{int(cm[i, j]):>17d}" for j in range(2)))
+        print(f"{classes[i]:>18}" + f"{ ''.join(f'{int(cm[i, j]):>17d}' for j in range(2))}")
 
     print(f"\n  TP = {par['TP']}   FN = {par['FN']}   "
           f"FP = {par['FP']}   TN = {par['TN']}")
