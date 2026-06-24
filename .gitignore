@@ -12,3 +12,10 @@ Thumbs.db
 # Temporários do Excel
 ~$*.xlsx
 ~$*.xls
+
+# Auxiliares do LaTeX
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz

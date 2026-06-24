@@ -1,8 +1,15 @@
 import os
+import shutil
+import subprocess
+from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+
+
+# Nome do autor exibido na capa do relatorio LaTeX. EDITE com o seu nome.
+NOME_AUTOR = "Nome do Aluno"
 
 
 # =============================================================================
@@ -613,6 +620,337 @@ def salvar_grafico_clusters(X, centros, rotulos, output_path):
 
 
 # =============================================================================
+# Relatorio LaTeX - gerado/atualizado a cada execucao (Etapa 6 do PP05)
+# =============================================================================
+
+# Preambulo LaTeX (string normal, NAO f-string: as chaves sao literais).
+_PREAMBULO_LATEX = r"""\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{geometry}
+\geometry{a4paper, margin=2.5cm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codegreen}{rgb}{0,0.5,0}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.96,0.96,0.96}
+
+\lstset{
+  backgroundcolor=\color{backcolour},
+  commentstyle=\color{codegreen},
+  keywordstyle=\color{blue},
+  stringstyle=\color{codepurple},
+  basicstyle=\ttfamily\scriptsize,
+  breakatwhitespace=false,
+  breaklines=true,
+  captionpos=b,
+  keepspaces=true,
+  numbers=left,
+  numbersep=5pt,
+  numberstyle=\tiny\color{codegray},
+  showspaces=false,
+  showstringspaces=false,
+  showtabs=false,
+  tabsize=2,
+  frame=single,
+  language=Python,
+  inputencoding=utf8,
+  extendedchars=true,
+  literate=%
+    {á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1
+    {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1 {Ó}{{\'O}}1 {Ú}{{\'U}}1
+    {à}{{\`a}}1 {â}{{\^a}}1 {ê}{{\^e}}1 {ô}{{\^o}}1 {î}{{\^i}}1
+    {ã}{{\~a}}1 {õ}{{\~o}}1 {ç}{{\c c}}1 {Ç}{{\c C}}1
+    {º}{{\textordmasculine}}1 {ª}{{\textordfeminine}}1
+}
+
+"""
+
+
+def _escape_tex(texto):
+    """Escapa caracteres especiais do LaTeX em textos livres (ex.: nome do autor)."""
+    subs = {
+        "\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$",
+        "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}",
+        "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
+    }
+    return "".join(subs.get(c, c) for c in str(texto))
+
+
+def _tex_sci(v):
+    """Formata um numero em notacao 10^{n} (modo matematico) quando for potencia
+    de dez exata; caso contrario, devolve a representacao decimal padrao."""
+    if v > 0:
+        exp = int(round(float(np.log10(v))))
+        if abs(v - 10.0 ** exp) <= abs(v) * 1e-9:
+            return rf"10^{{{exp}}}"
+    return f"{v:g}"
+
+
+def gerar_relatorio_latex(centros, variancias, contagens, pesos,
+                          eqm_list, n_epocas, eta, epsilon,
+                          X_val, d_val, y_val, y_pos, taxa, cm, par,
+                          fig_clusters, fig_eqm, fig_confusao, output_path):
+    """Gera (e SOBRESCREVE a cada execucao) o relatorio do projeto em LaTeX,
+    cobrindo as Etapas 1 a 5 do PP05 com tabelas, figuras e o codigo-fonte
+    completo em apendice. Todos os valores sao injetados a partir dos
+    resultados da execucao atual, de modo que o relatorio fica sempre
+    sincronizado com a rodada mais recente do main.py."""
+    K = len(centros)
+    total_val = len(X_val)
+    n_acertos = int(np.sum(np.asarray(y_pos) == np.asarray(d_val)))
+    reducao = (1.0 - eqm_list[-1] / eqm_list[0]) * 100.0 if eqm_list[0] else 0.0
+    data_geracao = datetime.now().strftime("%d/%m/%Y %H:%M")
+    autor = _escape_tex(NOME_AUTOR)
+
+    # Caminhos das figuras com barra normal (compativel com LaTeX em qualquer SO)
+    fig_clusters = fig_clusters.replace("\\", "/")
+    fig_eqm = fig_eqm.replace("\\", "/")
+    fig_confusao = fig_confusao.replace("\\", "/")
+
+    p = [_PREAMBULO_LATEX]
+
+    # --- Capa / cabecalho ---
+    p.append(r"""\begin{document}
+\begin{center}
+  {\large \textbf{Optativa III --- Redes Neurais Artificiais}}\\[3pt]
+  \textbf{Engenharia da Computação --- UEMG Divinópolis}\\[3pt]
+  \textbf{Prof. Arismar Morais Gonçalves Júnior} \hfill \textbf{Valor: 12 pontos}\\[10pt]
+  {\Large \textbf{5\textsuperscript{o} Projeto Prático --- Rede RBF no Reconhecimento de Padrões}}\\[10pt]
+\end{center}
+""")
+    p.append(rf"\noindent\textbf{{Autor:}} {autor} \hfill \textbf{{Data de geração:}} {data_geracao}\\[4pt]" + "\n")
+    p.append(r"\noindent\rule{\textwidth}{0.4pt}" + "\n\n")
+
+    # --- Introducao ---
+    p.append(r"""\section*{Introdução}
+A presente implementação treina uma Rede de Função de Base Radial (RBF) para a
+detecção da presença de radiação em substâncias nucleares, a partir de 40 condições
+conhecidas descritas por duas variáveis características ($x_1$ e $x_2$). A saída
+desejada assume $d = +1$ para radiação \textbf{existente} e $d = -1$ para radiação
+\textbf{inexistente}. A rede possui duas entradas, dois neurônios ocultos com ativação
+gaussiana (base radial) e um neurônio de saída com ativação linear. O treinamento
+ocorre em dois estágios: (i) posicionamento dos centros das gaussianas pelo algoritmo
+\textit{k-means} (não supervisionado) e (ii) ajuste dos pesos da camada de saída pela
+regra Delta generalizada (supervisionado).
+
+""")
+
+    # --- Etapa 1 ---
+    p.append(r"""\section*{Etapa 1 --- Treinamento da camada escondida (\textit{k-means})}
+O treinamento da camada intermediária foi realizado pelo algoritmo \textit{k-means}
+com $k = 2$, considerando \textbf{apenas} os padrões com presença de radiação
+($d = +1$). Os vetores de pesos (centros) foram inicializados com as duas primeiras
+amostras desse subconjunto e atualizados iterativamente até não haver mudança nos
+agrupamentos. A variância de cada gaussiana foi obtida pelo critério da distância
+quadrática média. A Tabela~\ref{tab:clusters} apresenta os centros e variâncias obtidos.
+
+\begin{table}[H]
+\centering
+\caption{Clusters do treinamento da camada escondida da rede RBF.}
+\label{tab:clusters}
+\begin{tabular}{ccccc}
+\toprule
+\textbf{Cluster} & \textbf{Center ($x_1$)} & \textbf{Center ($x_2$)} & \textbf{Variance} & \textbf{N\textsuperscript{o} padrões} \\
+\midrule
+""")
+    for j in range(K):
+        p.append(rf"{j + 1} & {centros[j][0]:.6f} & {centros[j][1]:.6f} & {variancias[j]:.6f} & {int(contagens[j])} \\" + "\n")
+    p.append(r"""\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.68\textwidth]{""" + fig_clusters + r"""}
+\caption{Agrupamentos \textit{k-means} dos padrões com presença de radiação ($d=+1$) e respectivos centros.}
+\end{figure}
+
+""")
+
+    # --- Etapa 2 ---
+    p.append(r"""\section*{Etapa 2 --- Treinamento da camada de saída (regra Delta generalizada)}
+O segundo estágio ajustou os pesos do neurônio de saída (ativação linear) pela regra
+Delta generalizada, apresentando as amostras individualmente, com taxa de aprendizagem
+""")
+    p.append(rf"$\eta = {eta}$ e precisão $\epsilon = {_tex_sci(epsilon)}$. " + "\n")
+    p.append(rf"O treinamento convergiu em \textbf{{{n_epocas}}} épocas. " +
+             r"A Tabela~\ref{tab:pesos} apresenta os pesos finais." + "\n")
+    p.append(r"""
+\begin{table}[H]
+\centering
+\caption{Resultados do segundo estágio de treinamento da rede RBF.}
+\label{tab:pesos}
+\begin{tabular}{cc}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+""")
+    p.append(rf"$W^{{(2)}}_{{1,1}}$ & {pesos[1]:.6f} \\" + "\n")
+    p.append(rf"$W^{{(2)}}_{{2,1}}$ & {pesos[2]:.6f} \\" + "\n")
+    p.append(rf"$\theta_1$ & {pesos[0]:.6f} \\" + "\n")
+    p.append(r"""\bottomrule
+\end{tabular}
+\end{table}
+
+""")
+
+    # --- Etapa 3 ---
+    p.append(r"""\section*{Etapa 3 --- Erro quadrático médio por época}
+A figura a seguir apresenta a evolução do erro quadrático médio (EQM) em função de
+cada época do segundo estágio de treinamento.
+""")
+    p.append(rf"O EQM inicial foi de {eqm_list[0]:.6f} e o final de {eqm_list[-1]:.6f}, "
+             rf"correspondendo a uma redução de {reducao:.2f}\% ao longo de {n_epocas} épocas." + "\n")
+    p.append(r"""
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{""" + fig_eqm + r"""}
+\caption{Erro quadrático médio (EQM) em função das épocas do 2\textsuperscript{o} estágio de treinamento.}
+\end{figure}
+
+""")
+
+    # --- Etapa 4 ---
+    p.append(r"""\section*{Etapa 4 --- Validação da rede RBF}
+Com os dados de validação e aplicando o pós-processamento ($y_{pos} = 1$ se
+$y \geq 0$ e $y_{pos} = -1$ se $y < 0$), obtiveram-se os resultados da
+Tabela~\ref{tab:validacao}.
+
+\begin{table}[H]
+\centering
+\caption{Resultados da validação da rede RBF.}
+\label{tab:validacao}
+\begin{tabular}{cccccc}
+\toprule
+\textbf{Sample} & $x_1$ & $x_2$ & $d$ & $y$ & $y^{post}$ \\
+\midrule
+""")
+    for i in range(total_val):
+        p.append(rf"{i + 1} & {X_val[i, 0]:.4f} & {X_val[i, 1]:.4f} & {int(d_val[i])} & {y_val[i]:.4f} & {int(y_pos[i])} \\" + "\n")
+    p.append(r"\midrule" + "\n")
+    p.append(rf"\multicolumn{{5}}{{r}}{{\textbf{{Success rate (\%)}}}} & \textbf{{{taxa:.2f}}} \\" + "\n")
+    p.append(r"""\bottomrule
+\end{tabular}
+\end{table}
+""")
+    p.append(rf"A rede classificou corretamente {n_acertos} de {total_val} amostras de validação." + "\n\n")
+
+    # --- Etapa 5 ---
+    p.append(r"""\section*{Etapa 5 --- Matriz de confusão e parâmetros}
+Considerando como classe positiva a presença de radiação ($+1$), a matriz de confusão
+obtida na validação é apresentada na Tabela~\ref{tab:confusao} e os parâmetros de
+classificação na Tabela~\ref{tab:metricas}.
+
+\begin{table}[H]
+\centering
+\caption{Matriz de confusão (linha = classe verdadeira, coluna = classe predita).}
+\label{tab:confusao}
+\begin{tabular}{ccc}
+\toprule
+ & \textbf{Predito $+1$} & \textbf{Predito $-1$} \\
+\midrule
+""")
+    p.append(rf"\textbf{{Real $+1$}} & {int(cm[0, 0])} & {int(cm[0, 1])} \\" + "\n")
+    p.append(rf"\textbf{{Real $-1$}} & {int(cm[1, 0])} & {int(cm[1, 1])} \\" + "\n")
+    p.append(r"""\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Parâmetros de classificação da rede RBF.}
+\label{tab:metricas}
+\begin{tabular}{lc}
+\toprule
+\textbf{Parâmetro} & \textbf{Valor} \\
+\midrule
+""")
+    p.append(rf"N\textsuperscript{{o}} de acertos (Nacertos) & {par['nacertos']} \\" + "\n")
+    p.append(rf"N\textsuperscript{{o}} de erros (Nerros) & {par['nerros']} \\" + "\n")
+    p.append(rf"Acurácia & {par['acuracia'] * 100:.2f}\% \\" + "\n")
+    p.append(rf"Sensibilidade & {par['sensibilidade'] * 100:.2f}\% \\" + "\n")
+    p.append(rf"Especificidade & {par['especificidade'] * 100:.2f}\% \\" + "\n")
+    p.append(rf"Precisão & {par['precisao'] * 100:.2f}\% \\" + "\n")
+    p.append(r"""\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.58\textwidth]{""" + fig_confusao + r"""}
+\caption{Matriz de confusão da validação da rede RBF.}
+\end{figure}
+
+\subsection*{Estratégias para melhoria do desempenho}
+Caso seja necessário melhorar o desempenho da rede, podem ser adotadas estratégias como:
+(i) aumentar o número de centros/neurônios da camada intermediária ($k > 2$), refinando
+as fronteiras hiperesféricas; (ii) ajustar o fator de abertura (variância) das gaussianas,
+controlando o raio de influência de cada centro; (iii) normalizar ou padronizar os
+atributos de entrada; (iv) avaliar diferentes inicializações do \textit{k-means},
+selecionando a de menor erro; (v) reduzir a taxa de aprendizagem $\eta$ ou a precisão
+$\epsilon$ do segundo estágio para refinar o ajuste dos pesos; e (vi) ampliar o conjunto
+de treinamento.
+
+""")
+
+    # --- Apendice: codigo-fonte (lido do proprio main.py em tempo de compilacao) ---
+    p.append(r"""\newpage
+\section*{Apêndice A --- Código-fonte (\texttt{main.py})}
+\lstinputlisting[language=Python]{main.py}
+
+\end{document}
+""")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("".join(p))
+
+
+def compilar_pdf(tex_path):
+    """Tenta compilar o .tex para .pdf com pdflatex (duas passagens, para
+    resolver as referencias). Se o pdflatex nao estiver instalado, apenas
+    informa que o .tex foi gerado (pode ser compilado no Overleaf)."""
+    pdflatex = shutil.which("pdflatex")
+    if not pdflatex:
+        print("  [info] pdflatex nao encontrado no PATH. O arquivo .tex foi gerado;")
+        print("         compile-o no Overleaf ou instale o MiKTeX/TeX Live para gerar o PDF.")
+        return False
+
+    base_dir = os.path.dirname(tex_path)
+    nome = os.path.basename(tex_path)
+    try:
+        for _ in range(2):
+            subprocess.run(
+                [pdflatex, "-interaction=nonstopmode", "-halt-on-error", nome],
+                cwd=base_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                check=True)
+    except subprocess.CalledProcessError:
+        print("  [aviso] Falha ao compilar com pdflatex. Verifique o log .log gerado.")
+        return False
+
+    # Limpeza dos arquivos auxiliares do LaTeX
+    base = os.path.splitext(tex_path)[0]
+    for ext in (".aux", ".log", ".out", ".toc"):
+        try:
+            os.remove(base + ext)
+        except OSError:
+            pass
+    print(f"  PDF compilado em        : {base + '.pdf'}")
+    return True
+
+
+# =============================================================================
 # Main - Questao 1
 # =============================================================================
 
@@ -798,6 +1136,26 @@ def main():
     planilha5_path = os.path.join(base_dir, "Tabela_Q5_metricas.xlsx")
     gerar_planilha_etapa5(cm, par, planilha5_path)
     print(f"Planilha Excel salva em : {planilha5_path}")
+
+    # =========================================================================
+    # ETAPA 6 - Relatorio LaTeX (gerado e atualizado a cada execucao)
+    # =========================================================================
+    print("\n" + "=" * 64)
+    print("ETAPA 6 - RELATORIO LATEX (atualizado a cada execucao)")
+    print("=" * 64)
+
+    relatorio_path = os.path.join(base_dir, "Relatorio_RBF.tex")
+    gerar_relatorio_latex(
+        centros, variancias, contagens, pesos,
+        eqm_list, n_epocas, 0.01, 1e-7,
+        X_val, d_val, y_val, y_pos, taxa, cm, par,
+        # caminhos relativos das figuras (relativos ao .tex, que fica em base_dir)
+        os.path.relpath(grafico_path, base_dir),
+        os.path.relpath(eqm_path, base_dir),
+        os.path.relpath(confusao_path, base_dir),
+        relatorio_path)
+    print(f"Relatorio LaTeX salvo em: {relatorio_path}")
+    compilar_pdf(relatorio_path)
 
 
 if __name__ == "__main__":
